@@ -43,3 +43,57 @@ create table postings (
 
 create index postings_entry_id on postings (entry_id);
 create index postings_account_id on postings (account_id);
+
+-- ── Invariant 1: every entry balances ───────────────────────────────────────
+-- Checked at COMMIT, not per row: an entry's postings arrive one insert at a
+-- time, and only the finished set has to sum to zero. A constraint trigger
+-- that is DEFERRABLE INITIALLY DEFERRED runs at commit, so a transaction that
+-- leaves any entry unbalanced (or with no postings at all) is rolled back
+-- whole: the money can't appear or vanish, even halfway through.
+create function assert_entry_balanced(p_entry bigint) returns void
+language plpgsql as $$
+declare
+  v_currency text;
+begin
+  if not exists (select 1 from postings where entry_id = p_entry) then
+    raise exception 'journal entry % has no postings', p_entry using errcode = 'check_violation';
+  end if;
+
+  select currency into v_currency
+    from postings
+   where entry_id = p_entry
+   group by currency
+  having sum(amount) <> 0
+   limit 1;
+
+  if v_currency is not null then
+    raise exception 'journal entry % does not balance in %', p_entry, v_currency using errcode = 'check_violation';
+  end if;
+end;
+$$;
+
+create function postings_balance() returns trigger
+language plpgsql as $$
+begin
+  perform assert_entry_balanced(new.entry_id);
+  return null;
+end;
+$$;
+
+create function journal_entries_have_postings() returns trigger
+language plpgsql as $$
+begin
+  perform assert_entry_balanced(new.id);
+  return null;
+end;
+$$;
+
+create constraint trigger postings_balance
+  after insert on postings
+  deferrable initially deferred
+  for each row execute function postings_balance();
+
+create constraint trigger journal_entries_have_postings
+  after insert on journal_entries
+  deferrable initially deferred
+  for each row execute function journal_entries_have_postings();
