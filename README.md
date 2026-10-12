@@ -2,9 +2,9 @@
 
 [![test](https://github.com/coderinho2/ledger-invariants/actions/workflows/test.yml/badge.svg)](https://github.com/coderinho2/ledger-invariants/actions/workflows/test.yml)
 
-A double-entry ledger in Postgres where the rules that keep money correct are
-enforced by the database itself, and proven with tests that try hard to
-break them.
+A double-entry ledger in Postgres. The database itself enforces the rules
+that keep money correct. The tests attempt to break each rule and check that
+the database refuses.
 
 ## Why this exists
 
@@ -20,11 +20,11 @@ from. It breaks in three ordinary ways:
 - **Fixing the past.** Someone corrects an old amount in place. Every report
   that was right yesterday is now different, and there is no record of why.
 
-Double-entry fixes the first and the third by construction: every movement
-is one entry with two or more sides that must cancel out, so money can't
-appear or vanish, and history only grows. This repo makes Postgres enforce
-those rules itself, adds idempotency and safe concurrency for the second,
-and tests each rule by trying to break it.
+Double-entry fixes the first and the third by design. Every movement is one
+entry with two or more sides that must cancel out. Money can't appear or
+vanish, and history only grows. This repo makes Postgres enforce those
+rules. It adds idempotency and safe concurrency for the second problem, and
+its tests attempt to break each rule.
 
 ## The invariants
 
@@ -87,8 +87,8 @@ positive and credits negative, so an entry's amounts always sum to zero.
 ## How each invariant is enforced
 
 The rules live in Postgres ([sql/schema.sql](sql/schema.sql)), not only in
-application code, so no client — and no hurried manual fix in a SQL console —
-can get around them.
+application code. No client can get around them, and neither can a hurried
+manual fix in a SQL console.
 
 1. **Every entry balances.** A `DEFERRABLE INITIALLY DEFERRED` constraint
    trigger checks each entry when the transaction commits: its postings must
@@ -126,7 +126,7 @@ DATABASE_URL=postgres://... npm test       # also the real-concurrency tests, as
   including an entry that touches one account twice.
 - **Against a model:** fast-check generates random sequences of deposits,
   payments, reversals and retried requests. A plain in-memory model predicts
-  each outcome — accepted, or refused and why — and the balances after it.
+  each outcome (accepted, or refused and why) and the balances after it.
   The ledger must agree after every step.
 - **Under real concurrency**, on a Postgres server with 20 connections:
   - 50 simultaneous $1 payments from a $10 wallet: exactly 10 succeed.
@@ -139,8 +139,8 @@ them fail:
 
 - writing postings in arbitrary order (deadlocks);
 - removing the overdraft check;
-- allowing an entry to be reversed twice — fast-check shrinks it to
-  "deposit 1 cent, reverse it, reverse it again";
+- allowing an entry to be reversed twice (fast-check shrinks the failure to
+  "deposit 1 cent, reverse it, reverse it again");
 - letting a reused key replay a different entry.
 
 ## Limits
@@ -149,7 +149,7 @@ them fail:
   entries through a conversion account, with the rate recorded by you.
 - **Balances are kept, not cached.** Each write updates one row per account
   it touches, so a single very hot account serialises its writers. That's
-  the price of the guarantee; splitting a hot account into sub-accounts is
+  the price of the guarantee. Splitting a hot account into sub-accounts is
   the usual way out.
 - **Not published to npm.**
 
