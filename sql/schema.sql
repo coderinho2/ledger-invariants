@@ -135,3 +135,56 @@ create trigger postings_no_truncate
 create trigger journal_entries_no_truncate
   before truncate on journal_entries
   for each statement execute function refuse_history_change();
+
+-- ── Running balances ───────────────────────────────────────────────────────
+-- One row per account, kept by the posting trigger in the same transaction
+-- as the posting itself, so it can never disagree with the postings.
+-- `balance` is in the account's NORMAL direction: a credit-normal wallet
+-- holding $10 has balance 1000, not -1000. Updating the row takes its row
+-- lock, which is what serialises concurrent writers on one account.
+create table account_balances (
+  account_id text primary key references accounts (id),
+  balance    bigint not null default 0,
+  updated_at timestamptz not null default now()
+);
+
+create function open_account_balance() returns trigger
+language plpgsql as $$
+begin
+  insert into account_balances (account_id) values (new.id);
+  return new;
+end;
+$$;
+
+create trigger accounts_open_balance
+  after insert on accounts
+  for each row execute function open_account_balance();
+
+create function apply_posting_to_balance() returns trigger
+language plpgsql as $$
+begin
+  update account_balances b
+     set balance = b.balance + case a.normal_balance when 'debit' then new.amount else -new.amount end,
+         updated_at = now()
+    from accounts a
+   where a.id = new.account_id
+     and b.account_id = new.account_id;
+  return new;
+end;
+$$;
+
+create trigger postings_apply_to_balance
+  after insert on postings
+  for each row execute function apply_posting_to_balance();
+
+-- Every running balance against the postings it summarises. Empty means
+-- the books agree with themselves; the tests call it after everything.
+create view balance_mismatches as
+select a.id as account_id,
+       b.balance as running,
+       coalesce(sum(case a.normal_balance when 'debit' then p.amount else -p.amount end), 0) as from_postings
+  from accounts a
+  join account_balances b on b.account_id = a.id
+  left join postings p on p.account_id = a.id
+ group by a.id, b.balance
+having b.balance <> coalesce(sum(case a.normal_balance when 'debit' then p.amount else -p.amount end), 0);

@@ -114,6 +114,23 @@ export async function reverseEntry(db: Database, entryId: string, options: { des
   );
 }
 
+/**
+ * An account's balance in its normal direction, in minor units: what a
+ * person would call the balance. A wallet (credit-normal) holding $10 is
+ * 1000n; the platform's cash (debit-normal) holding $10 is 1000n too.
+ */
+export async function getBalance(db: Queryable, accountId: string): Promise<bigint> {
+  const { rows } = await db.query<{ balance: string }>("select balance::text as balance from account_balances where account_id = $1", [accountId]);
+  if (!rows[0]) throw new LedgerError(`account ${accountId} does not exist`);
+  return BigInt(rows[0].balance);
+}
+
+/** Accounts whose running balance disagrees with their postings. Always empty, unless something is very wrong. */
+export async function balanceMismatches(db: Queryable): Promise<{ accountId: string; running: bigint; fromPostings: bigint }[]> {
+  const { rows } = await db.query<{ account_id: string; running: string; from_postings: string }>("select account_id, running::text, from_postings::text from balance_mismatches");
+  return rows.map((r) => ({ accountId: r.account_id, running: BigInt(r.running), fromPostings: BigInt(r.from_postings) }));
+}
+
 /** Debits minus credits on an account, in minor units: the raw signed sum. */
 export async function rawBalance(db: Queryable, accountId: string): Promise<bigint> {
   const { rows } = await db.query<{ total: string }>("select coalesce(sum(amount), 0)::text as total from postings where account_id = $1", [accountId]);
