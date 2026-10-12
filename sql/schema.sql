@@ -18,3 +18,28 @@ create table accounts (
   normal_balance text not null check (normal_balance in ('debit', 'credit')),
   created_at     timestamptz not null default now()
 );
+
+-- Lets a posting reference (account, currency) together, so a posting can
+-- only ever be in its account's own currency.
+alter table accounts add constraint accounts_id_currency unique (id, currency);
+
+-- A journal entry is one financial event: a deposit, a transfer, a fee.
+create table journal_entries (
+  id          bigint generated always as identity primary key,
+  description text not null,
+  created_at  timestamptz not null default now()
+);
+
+-- A posting is one side of an entry: an amount on one account.
+-- Debits are positive and credits negative, so a balanced entry sums to 0.
+create table postings (
+  id         bigint generated always as identity primary key,
+  entry_id   bigint not null references journal_entries (id),
+  account_id text not null,
+  currency   char(3) not null,
+  amount     bigint not null check (amount <> 0),
+  foreign key (account_id, currency) references accounts (id, currency)
+);
+
+create index postings_entry_id on postings (entry_id);
+create index postings_account_id on postings (account_id);
