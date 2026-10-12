@@ -47,7 +47,11 @@ export function requestHash(entry: EntryInput): string {
  * balances are kept per account, writing in a fixed order is what stops two
  * concurrent transfers between the same accounts from deadlocking.
  */
-export async function postEntry(db: Database, entry: EntryInput, options: { idempotencyKey?: string } = {}): Promise<PostedEntry & { replayed: boolean }> {
+export async function postEntry(
+  db: Database,
+  entry: EntryInput,
+  options: { idempotencyKey?: string; reverses?: string } = {},
+): Promise<PostedEntry & { replayed: boolean }> {
   validate(entry);
   const key = options.idempotencyKey ?? null;
   const hash = key === null ? null : requestHash(entry);
@@ -55,8 +59,8 @@ export async function postEntry(db: Database, entry: EntryInput, options: { idem
 
   return db.transaction(async (tx) => {
     const inserted = await tx.query<{ id: string }>(
-      "insert into journal_entries (description, idempotency_key, request_hash) values ($1, $2, $3) on conflict (idempotency_key) do nothing returning id::text as id",
-      [entry.description, key, hash],
+      "insert into journal_entries (description, idempotency_key, request_hash, reverses) values ($1, $2, $3, $4::bigint) on conflict (idempotency_key) do nothing returning id::text as id",
+      [entry.description, key, hash, options.reverses ?? null],
     );
 
     if (inserted.rows.length === 0) {
@@ -85,6 +89,29 @@ export async function postEntry(db: Database, entry: EntryInput, options: { idem
     }
     return { id, description: entry.description, postings, replayed: false };
   });
+}
+
+/**
+ * Corrects a recorded entry the only way the ledger allows: a new entry
+ * with every posting negated, linked to the one it undoes. Both stay in the
+ * books. An entry can be reversed once (the database holds that with a
+ * unique index), and a reversal can't itself be reversed — post a new
+ * entry instead.
+ */
+export async function reverseEntry(db: Database, entryId: string, options: { description?: string; idempotencyKey?: string } = {}): Promise<PostedEntry & { replayed: boolean }> {
+  const original = await db.query<{ description: string; reverses: string | null }>("select description, reverses::text as reverses from journal_entries where id = $1::bigint", [entryId]);
+  const found = original.rows[0];
+  if (!found) throw new LedgerError(`entry ${entryId} does not exist`);
+  if (found.reverses !== null) throw new LedgerError(`entry ${entryId} is itself a reversal; post a new entry instead`);
+  const recorded = await db.query<{ account_id: string; currency: string; amount: string }>("select account_id, currency, amount::text as amount from postings where entry_id = $1::bigint", [entryId]);
+  return postEntry(
+    db,
+    {
+      description: options.description ?? `Reversal of entry ${entryId}: ${found.description}`,
+      postings: recorded.rows.map((r) => ({ accountId: r.account_id, currency: r.currency.trim(), amount: -BigInt(r.amount) })),
+    },
+    { idempotencyKey: options.idempotencyKey, reverses: entryId },
+  );
 }
 
 /** Debits minus credits on an account, in minor units: the raw signed sum. */

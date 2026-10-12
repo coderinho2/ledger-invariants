@@ -33,6 +33,9 @@ create table journal_entries (
   -- caught instead of silently returning the wrong one.
   idempotency_key text unique,
   request_hash    text,
+  -- A correction: this entry undoes that one. History is append-only, so a
+  -- mistake stays visible beside the entry that cancelled it.
+  reverses        bigint unique references journal_entries (id),
   created_at      timestamptz not null default now(),
   check ((idempotency_key is null) = (request_hash is null))
 );
