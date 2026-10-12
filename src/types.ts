@@ -16,6 +16,8 @@ export interface NewAccount {
   /** ISO 4217 code, e.g. "USD". */
   currency: string;
   normalBalance: NormalBalance;
+  /** Refuse any entry that would leave this account below zero, e.g. a customer's wallet. Default false. */
+  protected?: boolean;
 }
 
 /** One side of an entry. Debits are positive, credits negative, in minor units (cents). */

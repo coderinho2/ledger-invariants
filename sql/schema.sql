@@ -16,6 +16,9 @@ create table accounts (
   name           text not null,
   currency       char(3) not null check (currency ~ '^[A-Z]{3}$'),
   normal_balance text not null check (normal_balance in ('debit', 'credit')),
+  -- Invariant 4: a protected account (a customer's wallet) can't go below
+  -- zero in its normal direction. The platform's own clearing accounts may.
+  allow_negative boolean not null default true,
   created_at     timestamptz not null default now()
 );
 
@@ -188,3 +191,30 @@ select a.id as account_id,
   left join postings p on p.account_id = a.id
  group by a.id, b.balance
 having b.balance <> coalesce(sum(case a.normal_balance when 'debit' then p.amount else -p.amount end), 0);
+
+-- ── Invariant 4: protected accounts can't go negative ──────────────────────
+-- Checked at COMMIT against the account's final balance, so an entry that
+-- touches one account twice is judged by where it ends up, not by the order
+-- its postings were written in. Writers on one account are already queued
+-- by the balance row's lock, so two transfers can't both spend the same
+-- last dollar: the second sees the first's result.
+create function refuse_overdraft() returns trigger
+language plpgsql as $$
+declare
+  v_balance bigint;
+  v_allowed boolean;
+begin
+  select b.balance, a.allow_negative into v_balance, v_allowed
+    from account_balances b join accounts a on a.id = b.account_id
+   where b.account_id = new.account_id;
+  if v_balance < 0 and not v_allowed then
+    raise exception 'insufficient funds in %: the balance would be %', new.account_id, v_balance using errcode = 'check_violation';
+  end if;
+  return null;
+end;
+$$;
+
+create constraint trigger account_balances_no_overdraft
+  after update on account_balances
+  deferrable initially deferred
+  for each row execute function refuse_overdraft();

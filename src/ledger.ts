@@ -7,8 +7,17 @@ export class LedgerError extends Error {}
 /** The idempotency key was used before for a different entry. */
 export class IdempotencyConflict extends LedgerError {}
 
+/** The entry would leave a protected account below zero. Nothing was recorded. */
+export class InsufficientFunds extends LedgerError {}
+
 export async function createAccount(db: Queryable, account: NewAccount): Promise<void> {
-  await db.query("insert into accounts (id, name, currency, normal_balance) values ($1, $2, $3, $4)", [account.id, account.name, account.currency, account.normalBalance]);
+  await db.query("insert into accounts (id, name, currency, normal_balance, allow_negative) values ($1, $2, $3, $4, $5)", [
+    account.id,
+    account.name,
+    account.currency,
+    account.normalBalance,
+    !account.protected,
+  ]);
 }
 
 /** Debits minus credits per currency must be zero; checked here for a clear message, and again by Postgres at commit. */
@@ -88,6 +97,11 @@ export async function postEntry(
       await tx.query("insert into postings (entry_id, account_id, currency, amount) values ($1::bigint, $2, $3, $4::bigint)", [id, posting.accountId, posting.currency, posting.amount.toString()]);
     }
     return { id, description: entry.description, postings, replayed: false };
+  }).catch((error: unknown) => {
+    // The overdraft check runs at commit, so it surfaces as the commit's error.
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("insufficient funds")) throw new InsufficientFunds(message);
+    throw error;
   });
 }
 
