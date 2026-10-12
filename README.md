@@ -6,11 +6,23 @@ break them.
 
 ## Why this exists
 
-<!-- STEP 1 — Armin writes this section, in his own words (4–6 sentences).
-     Answer: what goes wrong in a payments system when a ledger is just a
-     table of balances that code adds to and subtracts from? Think about a
-     crash halfway through a transfer, two requests at the same time, and
-     someone "fixing" a past row. Why is double-entry the answer? -->
+The simplest ledger is a table of balances that code adds to and subtracts
+from. It breaks in three ordinary ways:
+
+- **A crash in the middle.** A transfer takes $50 from one balance, then the
+  process dies before adding it to the other. The money is gone, and nothing
+  records that it ever existed.
+- **Two writers at once.** Two requests read the same balance, each subtracts
+  from what it read, and one write overwrites the other. An account can pay
+  out more than it holds.
+- **Fixing the past.** Someone corrects an old amount in place. Every report
+  that was right yesterday is now different, and there is no record of why.
+
+Double-entry fixes the first and the third by construction: every movement
+is one entry with two or more sides that must cancel out, so money can't
+appear or vanish, and history only grows. This repo makes Postgres enforce
+those rules itself, adds idempotency and safe concurrency for the second,
+and tests each rule by trying to break it.
 
 ## The invariants
 
