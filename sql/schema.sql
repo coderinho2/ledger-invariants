@@ -97,3 +97,31 @@ create constraint trigger journal_entries_have_postings
   after insert on journal_entries
   deferrable initially deferred
   for each row execute function journal_entries_have_postings();
+
+-- ── Invariant 2: history is append-only ─────────────────────────────────────
+-- Once committed, an entry and its postings never change and never go away.
+-- A mistake is corrected by a new entry that reverses it, so the books can
+-- always explain how they got to where they are. Truncate is refused too.
+create function refuse_history_change() returns trigger
+language plpgsql as $$
+begin
+  raise exception '% is append-only: % is not allowed; post a reversing entry instead', tg_table_name, lower(tg_op)
+    using errcode = 'insufficient_privilege';
+end;
+$$;
+
+create trigger postings_append_only
+  before update or delete on postings
+  for each row execute function refuse_history_change();
+
+create trigger journal_entries_append_only
+  before update or delete on journal_entries
+  for each row execute function refuse_history_change();
+
+create trigger postings_no_truncate
+  before truncate on postings
+  for each statement execute function refuse_history_change();
+
+create trigger journal_entries_no_truncate
+  before truncate on journal_entries
+  for each statement execute function refuse_history_change();
