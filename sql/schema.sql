@@ -25,9 +25,16 @@ alter table accounts add constraint accounts_id_currency unique (id, currency);
 
 -- A journal entry is one financial event: a deposit, a transfer, a fee.
 create table journal_entries (
-  id          bigint generated always as identity primary key,
-  description text not null,
-  created_at  timestamptz not null default now()
+  id              bigint generated always as identity primary key,
+  description     text not null,
+  -- Invariant 3: the caller's key for this entry. Unique, so a retried
+  -- request can't record the same movement twice; request_hash is a
+  -- fingerprint of the entry, so a reused key with a different entry is
+  -- caught instead of silently returning the wrong one.
+  idempotency_key text unique,
+  request_hash    text,
+  created_at      timestamptz not null default now(),
+  check ((idempotency_key is null) = (request_hash is null))
 );
 
 -- A posting is one side of an entry: an amount on one account.

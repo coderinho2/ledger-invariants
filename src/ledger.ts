@@ -1,7 +1,11 @@
+import { createHash } from "node:crypto";
 import type { Database, EntryInput, NewAccount, PostedEntry, PostingInput, Queryable } from "./types.js";
 
 /** Refused before anything reaches the database: the database would refuse it too, less helpfully. */
 export class LedgerError extends Error {}
+
+/** The idempotency key was used before for a different entry. */
+export class IdempotencyConflict extends LedgerError {}
 
 export async function createAccount(db: Queryable, account: NewAccount): Promise<void> {
   await db.query("insert into accounts (id, name, currency, normal_balance) values ($1, $2, $3, $4)", [account.id, account.name, account.currency, account.normalBalance]);
@@ -20,24 +24,66 @@ function validate(entry: EntryInput): void {
   }
 }
 
+const byAccount = (a: PostingInput, b: PostingInput) => (a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
+
+/** A fingerprint of what the entry says, independent of the order its postings were listed in. */
+export function requestHash(entry: EntryInput): string {
+  const postings = [...entry.postings].sort(byAccount).map((p) => [p.accountId, p.currency, p.amount.toString()]);
+  return createHash("sha256").update(JSON.stringify([entry.description, postings])).digest("hex");
+}
+
 /**
  * Records one entry and its postings in one transaction. Either all of it
  * is in the books or none of it is.
+ *
+ * With an idempotency key, the same request sent again (a client retry, a
+ * webhook delivered twice) returns the entry already recorded, with
+ * `replayed: true`, instead of moving the money a second time. The unique
+ * index decides: if two attempts race, the second waits for the first to
+ * commit and then finds its entry. The same key with a different entry is
+ * an IdempotencyConflict.
  *
  * Postings are written in account order. That doesn't matter yet, but once
  * balances are kept per account, writing in a fixed order is what stops two
  * concurrent transfers between the same accounts from deadlocking.
  */
-export async function postEntry(db: Database, entry: EntryInput): Promise<PostedEntry> {
+export async function postEntry(db: Database, entry: EntryInput, options: { idempotencyKey?: string } = {}): Promise<PostedEntry & { replayed: boolean }> {
   validate(entry);
-  const postings = [...entry.postings].sort((a, b) => (a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0));
+  const key = options.idempotencyKey ?? null;
+  const hash = key === null ? null : requestHash(entry);
+  const postings = [...entry.postings].sort(byAccount);
+
   return db.transaction(async (tx) => {
-    const { rows } = await tx.query<{ id: string }>("insert into journal_entries (description) values ($1) returning id::text as id", [entry.description]);
-    const id = rows[0]!.id;
+    const inserted = await tx.query<{ id: string }>(
+      "insert into journal_entries (description, idempotency_key, request_hash) values ($1, $2, $3) on conflict (idempotency_key) do nothing returning id::text as id",
+      [entry.description, key, hash],
+    );
+
+    if (inserted.rows.length === 0) {
+      // The key is taken: this is a retry, or a mistake.
+      const existing = await tx.query<{ id: string; description: string; request_hash: string }>(
+        "select id::text as id, description, request_hash from journal_entries where idempotency_key = $1",
+        [key],
+      );
+      const found = existing.rows[0]!;
+      if (found.request_hash !== hash) throw new IdempotencyConflict(`idempotency key ${key} was already used for a different entry (${found.id})`);
+      const recorded = await tx.query<{ account_id: string; currency: string; amount: string }>(
+        "select account_id, currency, amount::text as amount from postings where entry_id = $1::bigint order by account_id, amount",
+        [found.id],
+      );
+      return {
+        id: found.id,
+        description: found.description,
+        postings: recorded.rows.map((r) => ({ accountId: r.account_id, currency: r.currency.trim(), amount: BigInt(r.amount) })),
+        replayed: true,
+      };
+    }
+
+    const id = inserted.rows[0]!.id;
     for (const posting of postings) {
       await tx.query("insert into postings (entry_id, account_id, currency, amount) values ($1::bigint, $2, $3, $4::bigint)", [id, posting.accountId, posting.currency, posting.amount.toString()]);
     }
-    return { id, description: entry.description, postings };
+    return { id, description: entry.description, postings, replayed: false };
   });
 }
 
