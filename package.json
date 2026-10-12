@@ -12,7 +12,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "example": "tsx examples/quickstart.ts"
   },
   "keywords": [
     "ledger",
@@ -32,6 +33,7 @@
     "@types/pg": "^8.23.1",
     "fast-check": "^3.23.2",
     "pg": "^8.23.1",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"
   },

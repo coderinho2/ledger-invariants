@@ -71,6 +71,9 @@ await postEntry(db, {
 await getBalance(db, "wallet:alice"); // 600n — balances read in the account's normal direction
 ```
 
+The same example runs end to end with `DATABASE_URL=postgres://... npm run example`
+([examples/quickstart.ts](examples/quickstart.ts)).
+
 Amounts are integers in minor units (cents), as `bigint`. Debits are
 positive and credits negative, so an entry's amounts always sum to zero.
 
